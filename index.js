@@ -204,28 +204,38 @@ client.on('interactionCreate', async (interaction) => {
     return interaction.reply("🛑 Auto delete parado");
   }
 
-  // ✅ status
+  // ✅ status (CORRIGIDO + PROFISSIONAL)
   if (interaction.commandName === 'status') {
 
-    if (!Object.keys(autoDeleteConfig).length) {
-      return interaction.reply("⚠️ Nenhum canal com auto delete ativo");
+    await interaction.deferReply(); // ✅ evita timeout
+
+    const canais = Object.keys(autoDeleteConfig);
+
+    if (!canais.length) {
+      return interaction.editReply("⚠️ Nenhum canal com auto delete ativo");
     }
 
-    let msg = "📊 Auto Delete Ativo:\n\n";
+    let msg = "📊 **Status do Auto Delete**\n\n";
+    msg += `Total de canais ativos: **${canais.length}**\n\n`;
 
-    for (const canalId in autoDeleteConfig) {
+    for (const canalId of canais) {
       try {
+
         const canal = await client.channels.fetch(canalId);
         const tempo = autoDeleteConfig[canalId];
 
-        msg += `• #${canal.name} → a cada ${formatTempo(tempo)}\n`;
+        const loopAtivo = intervals[canalId] ? "✅" : "❌";
+
+        msg += `• **#${canal.name}**\n`;
+        msg += `  ⏱ Intervalo: ${formatTempo(tempo)}\n`;
+        msg += `  🔁 Loop ativo: ${loopAtivo}\n\n`;
 
       } catch (err) {
-        msg += `• Canal desconhecido (${canalId})\n`;
+        msg += `• Canal desconhecido (${canalId})\n\n`;
       }
     }
 
-    return interaction.reply(msg);
+    return interaction.editReply(msg); // ✅ IMPORTANTE
   }
 });
 

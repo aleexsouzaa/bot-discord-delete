@@ -1,21 +1,23 @@
+// =====================
+// CONFIG FILE
+// =====================
 const fs = require('fs');
 
 const CONFIG_FILE = './autodelete.json';
 
-// carregar config
 function loadConfig() {
   if (!fs.existsSync(CONFIG_FILE)) return {};
   return JSON.parse(fs.readFileSync(CONFIG_FILE));
 }
 
-// salvar config
 function saveConfig(config) {
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
+
 // =====================
-// EXPRESS (Render fix)
-// =====================
+// EXPRESS (Render)
+ // =====================
 const express = require('express');
 const app = express();
 
@@ -24,7 +26,7 @@ app.get('/', (req, res) => {
 });
 
 app.listen(3000, () => {
-  console.log('🌐 Servidor web ativo (Render feliz)');
+  console.log('🌐 Servidor web ativo');
 });
 
 
@@ -54,8 +56,9 @@ const client = new Client({
 let autoDeleteConfig = loadConfig();
 let intervals = {};
 
+
 // =====================
-// ⏱️ CONVERSOR DE TEMPO
+// ⏱️ TEMPO
 // =====================
 function parseTempo(str) {
   let total = 0;
@@ -74,215 +77,198 @@ function parseTempo(str) {
   return total;
 }
 
+function formatTempo(ms) {
+  const segundos = Math.floor(ms / 1000);
+
+  const h = Math.floor(segundos / 3600);
+  const m = Math.floor((segundos % 3600) / 60);
+  const s = segundos % 60;
+
+  let result = "";
+
+  if (h) result += `${h}h `;
+  if (m) result += `${m}m `;
+  if (s) result += `${s}s`;
+
+  return result.trim();
+}
+
 
 // =====================
-// READY
+// ✅ AUTO DELETE
 // =====================
-client.once('clientReady', async () => {
-  const config = loadConfig();
+async function startAutoDelete(client, canalId, tempoMs) {
+  try {
+    const canal = await client.channels.fetch(canalId);
 
-  for (const canalId in config) {
-    console.log(`🔄 Restaurando auto delete para canal ${canalId}`);
-    await startAutoDelete(client, canalId, config[canalId]);
-  }
-  console.log(`✅ Bot online: ${client.user.tag}`);
-});
-
-
-// =====================
-// 💬 COMANDOS TEXTO
-// =====================
-client.on('messageCreate', async (message) => {
-
-  if (message.author.bot) return;
-
-  // ✅ !limpar
-  if (message.content.startsWith('!limpar')) {
-
-    const quantidade = parseInt(message.content.split(' ')[1]);
-
-    if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
-      return message.reply('❌ Sem permissão');
+    if (!canal) {
+      console.log(`❌ Canal não encontrado`);
+      return;
     }
 
-    if (!quantidade || quantidade < 1 || quantidade > 100) {
-      return message.reply('Use: !limpar 1-100');
+    if (intervals[canalId]) {
+      clearInterval(intervals[canalId]);
     }
 
-    await message.channel.bulkDelete(quantidade, true);
-    const msg = await message.channel.send(`✅ ${quantidade} mensagens apagadas`);
-    setTimeout(() => msg.delete(), 3000);
-  }
+    console.log(`✅ Auto delete ativo em ${canal.name}`);
 
-  // ✅ !autodelete
-  if (message.content.startsWith('!autodelete')) {
-
-    const args = message.content.split(' ');
-    const canal = message.mentions.channels.first();
-    const tempo = args[2];
-
-    if (!canal || !tempo) {
-      return message.reply('Uso: !autodelete #canal 10s / 1m / 1h');
-    }
-
-    const tempoMs = parseTempo(tempo);
-
-    if (!tempoMs || tempoMs < 5000) {
-      return message.reply('⚠️ Tempo mínimo: 5s');
-    }
-
-    if (autoDeleteConfig[canal.id]) {
-      clearInterval(autoDeleteConfig[canal.id]);
-    }
-
-    autoDeleteConfig[canal.id] = setInterval(async () => {
+    intervals[canalId] = setInterval(async () => {
       try {
-        await canal.bulkDelete(100, true);
-        console.log(`🧹 Limpando ${canal.name}`);
+        const messages = await canal.messages.fetch({ limit: 100 });
+
+        if (!messages.size) return;
+
+        await canal.bulkDelete(messages, true);
+
+        console.log(`🧹 Limpou ${messages.size} mensagens em ${canal.name}`);
       } catch (err) {
-        console.error(err);
+        console.error("Erro ao limpar:", err);
       }
     }, tempoMs);
 
-    message.reply(`✅ Auto delete ativado em ${canal.name} (${tempo})`);
+  } catch (err) {
+    console.error("Erro ao iniciar:", err);
   }
+}
 
-  // ✅ !parar
-  if (message.content === '!parar') {
 
-    Object.keys(autoDeleteConfig).forEach(id => {
-      clearInterval(autoDeleteConfig[id]);
-    });
+// =====================
+// READY + RESTORE
+// =====================
+client.once('clientReady', async () => {
+  console.log(`✅ Bot online: ${client.user.tag}`);
 
-    autoDeleteConfig = {};
-    message.reply('🛑 Auto delete parado');
+  const config = loadConfig();
+
+  for (const canalId in config) {
+    try {
+      await startAutoDelete(client, canalId, config[canalId]);
+      console.log(`🔄 Restaurado canal ${canalId}`);
+    } catch (err) {
+      console.error("Erro restore:", err);
+    }
   }
-
 });
 
 
 // =====================
-// ⚡ SLASH COMMANDS
+// ✅ SLASH COMMANDS
 // =====================
 client.on('interactionCreate', async (interaction) => {
-
   if (!interaction.isChatInputCommand()) return;
 
-  // ✅ /limpar
+  // limpar
   if (interaction.commandName === 'limpar') {
-
     const quantidade = interaction.options.getInteger('quantidade');
 
     if (!interaction.memberPermissions.has(PermissionsBitField.Flags.ManageMessages)) {
-      return interaction.reply({ content: '❌ Sem permissão', ephemeral: true });
+      return interaction.reply({ content: "Sem permissão", ephemeral: true });
     }
 
     await interaction.channel.bulkDelete(quantidade, true);
-    return interaction.reply(`✅ ${quantidade} mensagens apagadas`);
+    return interaction.reply(`✅ ${quantidade} apagadas`);
   }
 
-  // ✅ /autodelete (NOVO)
-if (interaction.commandName === 'autodelete') {
+  // autodelete
+  if (interaction.commandName === 'autodelete') {
+    const canal = interaction.options.getChannel('canal');
+    const tempoStr = interaction.options.getString('tempo');
 
-  const canal = interaction.options.getChannel('canal');
-  const tempoStr = interaction.options.getString('tempo');
+    const tempoMs = parseTempo(tempoStr);
 
-  const tempoMs = parseTempo(tempoStr);
+    if (!tempoMs || tempoMs < 5000) {
+      return interaction.reply("Tempo inválido");
+    }
 
-  if (!tempoMs || tempoMs < 5000) {
-    return interaction.reply("⚠️ Tempo inválido");
+    autoDeleteConfig[canal.id] = tempoMs;
+    saveConfig(autoDeleteConfig);
+
+    await startAutoDelete(client, canal.id, tempoMs);
+
+    return interaction.reply(`✅ Auto delete ativado em ${canal.name}`);
   }
 
-  autoDeleteConfig[canal.id] = tempoMs;
-  saveConfig(autoDeleteConfig);
+  // stop
+  if (interaction.commandName === 'stopautodelete') {
+    for (const id in intervals) {
+      clearInterval(intervals[id]);
+    }
 
-  await startAutoDelete(client, canal.id, tempoMs);
+    intervals = {};
+    autoDeleteConfig = {};
+    saveConfig(autoDeleteConfig);
 
-  return interaction.reply(`✅ Auto delete ativado em ${canal.name} (${tempoStr})`);
-}
-
-  // ✅ /stopautodelete
- if (interaction.commandName === 'stopautodelete') {
-
-  for (const canalId in intervals) {
-    clearInterval(intervals[canalId]);
+    return interaction.reply("🛑 Auto delete parado");
   }
 
-  intervals = {};
-  autoDeleteConfig = {};
-  saveConfig(autoDeleteConfig);
+  // ✅ status
+  if (interaction.commandName === 'status') {
 
-  return interaction.reply('🛑 Auto delete parado e apagado da config');
-}
+    if (!Object.keys(autoDeleteConfig).length) {
+      return interaction.reply("⚠️ Nenhum canal com auto delete ativo");
+    }
+
+    let msg = "📊 Auto Delete Ativo:\n\n";
+
+    for (const canalId in autoDeleteConfig) {
+      try {
+        const canal = await client.channels.fetch(canalId);
+        const tempo = autoDeleteConfig[canalId];
+
+        msg += `• ${canal.name} → a cada ${formatTempo(tempo)}\n`;
+
+      } catch (err) {
+        msg += `• Canal desconhecido (${canalId})\n`;
+      }
+    }
+
+    return interaction.reply(msg);
+  }
+});
 
 
 // =====================
-// 📦 REGISTRAR SLASH
+// ✅ REGISTRAR SLASH
 // =====================
 const rest = new REST({ version: '10' }).setToken(TOKEN);
 
 (async () => {
-  try {
-    await rest.put(
-      Routes.applicationCommands(CLIENT_ID),
-      {
-        body: [
+  await rest.put(
+    Routes.applicationCommands(CLIENT_ID),
+    {
+      body: [
+        new SlashCommandBuilder()
+          .setName('limpar')
+          .setDescription('Apagar mensagens')
+          .addIntegerOption(opt =>
+            opt.setName('quantidade').setRequired(true)
+          ),
 
-          new SlashCommandBuilder()
-            .setName('limpar')
-            .setDescription('Apagar mensagens')
-            .addIntegerOption(opt =>
-              opt.setName('quantidade')
-                .setDescription('1-100')
-                .setRequired(true)
-            ),
+        new SlashCommandBuilder()
+          .setName('autodelete')
+          .setDescription('Auto delete')
+          .addChannelOption(opt =>
+            opt.setName('canal').setRequired(true)
+          )
+          .addStringOption(opt =>
+            opt.setName('tempo').setRequired(true)
+          ),
 
-          new SlashCommandBuilder()
-            .setName('autodelete')
-            .setDescription('Ativar auto delete')
-            .addChannelOption(opt =>
-              opt.setName('canal')
-                .setDescription('Canal')
-                .setRequired(true)
-            )
-            .addStringOption(opt =>
-              opt.setName('tempo')
-                .setDescription('10s, 5m, 1h, 1h30m')
-                .setRequired(true)
-            ),
+        new SlashCommandBuilder()
+          .setName('stopautodelete')
+          .setDescription('Parar auto delete'),
 
-          new SlashCommandBuilder()
-            .setName('stopautodelete')
-            .setDescription('Parar auto delete')
+        
+        new SlashCommandBuilder()
+          .setName('status')
+          .setDescription('Ver canais com auto delete ativo')
 
-        ]
-      }
-    );
+      ]
+    }
+  );
 
-    console.log('✅ Slash commands registrados');
-  } catch (err) {
-    console.error(err);
-  }
+  console.log("✅ Slash registrados");
 })();
 
-
-async function startAutoDelete(client, canalId, tempoMs) {
-  const canal = await client.channels.fetch(canalId);
-
-  if (!canal) return;
-
-  if (intervals[canalId]) {
-    clearInterval(intervals[canalId]);
-  }
-
-  intervals[canalId] = setInterval(async () => {
-    try {
-      await canal.bulkDelete(100, true);
-      console.log(`🧹 Limpando ${canal.name}`);
-    } catch (err) {
-      console.error(err);
-    }
-  }, tempoMs);
-}
 
 client.login(TOKEN);

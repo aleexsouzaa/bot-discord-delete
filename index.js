@@ -151,27 +151,20 @@ client.once('clientReady', async () => {
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
-  // deferReply IMEDIATAMENTE — antes de qualquer lógica
-  // Isso garante que o Discord não descarte a interação por timeout (3s)
-  try {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  } catch (err) {
-    // Se já expirou antes mesmo do deferReply, não tem o que fazer
-    console.error(`❌ deferReply falhou (${interaction.commandName}):`, err.message);
-    return;
-  }
-
   try {
 
     // ✅ limpar
     if (interaction.commandName === 'limpar') {
       const quantidade = interaction.options.getInteger('quantidade');
 
+      await interaction.reply({
+        content: `✅ Apagando ${quantidade} mensagens...`,
+        ephemeral: true
+      });
+
       await interaction.channel.bulkDelete(quantidade, true);
-
-      return interaction.editReply(`✅ ${quantidade} mensagens apagadas.`);
+      return;
     }
-
 
     // ✅ autodelete
     if (interaction.commandName === 'autodelete') {
@@ -180,7 +173,10 @@ client.on('interactionCreate', async (interaction) => {
       const tempoMs = parseTempo(tempoStr);
 
       if (!tempoMs || tempoMs < 5000) {
-        return interaction.editReply("⚠️ Tempo inválido. Use formato como: `10s`, `5m`, `1h`");
+        return interaction.reply({
+          content: "⚠️ Tempo inválido",
+          ephemeral: true
+        });
       }
 
       autoDeleteConfig[canal.id] = tempoMs;
@@ -188,13 +184,13 @@ client.on('interactionCreate', async (interaction) => {
 
       await startAutoDelete(client, canal.id, tempoMs);
 
-      return interaction.editReply(
-        `✅ Auto delete ativado em #${canal.name} a cada ${formatTempo(tempoMs)}`
-      );
+      return interaction.reply({
+        content: `✅ Auto delete ativado em #${canal.name}`,
+        ephemeral: true
+      });
     }
 
-
-    // ✅ stopautodelete
+    // ✅ stop
     if (interaction.commandName === 'stopautodelete') {
       for (const id in intervals) {
         clearInterval(intervals[id]);
@@ -204,31 +200,34 @@ client.on('interactionCreate', async (interaction) => {
       autoDeleteConfig = {};
       saveConfig(autoDeleteConfig);
 
-      return interaction.editReply("🛑 Auto delete parado em todos os canais");
+      return interaction.reply({
+        content: "🛑 Auto delete parado",
+        ephemeral: true
+      });
     }
 
-
-    // ✅ status
+    // ✅ status (ÚNICO QUE USA defer)
     if (interaction.commandName === 'status') {
+
+      await interaction.deferReply({ ephemeral: true });
+
       const canais = Object.keys(autoDeleteConfig);
 
       if (!canais.length) {
-        return interaction.editReply("⚠️ Nenhum canal com auto delete ativo");
+        return interaction.editReply("⚠️ Nenhum canal ativo");
       }
 
-      let msg = `📊 **Status Auto Delete**\n\n`;
+      let msg = `📊 Status Auto Delete\n\n`;
 
       for (const canalId of canais) {
         try {
           const canal = await client.channels.fetch(canalId);
           const tempo = autoDeleteConfig[canalId];
 
-          msg += `• #${canal.name}\n`;
-          msg += `  ⏱ ${formatTempo(tempo)}\n`;
-          msg += `  🔁 ${intervals[canalId] ? "ativo ✅" : "parado ❌"}\n\n`;
+          msg += `• #${canal.name} → ${formatTempo(tempo)}\n`;
 
         } catch {
-          msg += `• canal desconhecido (${canalId})\n\n`;
+          msg += `• canal inválido\n`;
         }
       }
 
@@ -236,12 +235,13 @@ client.on('interactionCreate', async (interaction) => {
     }
 
   } catch (err) {
-    console.error(`❌ Erro no comando ${interaction.commandName}:`, err.message);
+    console.error("❌ ERRO:", err.message);
 
-    try {
-      await interaction.editReply("❌ Erro ao executar o comando.");
-    } catch {
-      // Ignora se não conseguir nem editar
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({
+        content: "❌ erro",
+        ephemeral: true
+      });
     }
   }
 });

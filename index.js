@@ -31,6 +31,7 @@ const {
   Client,
   GatewayIntentBits,
   SlashCommandBuilder,
+  MessageFlags,
   REST,
   Routes
 } = require('discord.js');
@@ -45,6 +46,18 @@ const client = new Client({
     GatewayIntentBits.MessageContent
   ]
 });
+
+// =====================
+// EVITA CRASH POR ERRO NÃO TRATADO
+// =====================
+client.on('error', (err) => {
+  console.error('❌ Erro no client Discord:', err.message);
+});
+
+process.on('unhandledRejection', (err) => {
+  console.error('❌ unhandledRejection:', err?.message || err);
+});
+
 
 let autoDeleteConfig = loadConfig();
 let intervals = {};
@@ -112,12 +125,12 @@ async function startAutoDelete(client, canalId, tempoMs) {
         console.log(`🧹 ${deletable.size} mensagens apagadas em ${canal.name}`);
 
       } catch (err) {
-        console.error("❌ Erro no loop:", err);
+        console.error("❌ Erro no loop:", err.message);
       }
     }, tempoMs);
 
   } catch (err) {
-    console.error("Erro start:", err);
+    console.error("❌ Erro start:", err.message);
   }
 }
 
@@ -142,99 +155,113 @@ client.once('clientReady', async () => {
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
+  try {
 
-  // ✅ limpar
-  if (interaction.commandName === 'limpar') {
-    const quantidade = interaction.options.getInteger('quantidade');
+    // ✅ limpar
+    if (interaction.commandName === 'limpar') {
+      const quantidade = interaction.options.getInteger('quantidade');
 
-    // IMPORTANTE: responde ANTES de apagar, senão a interação some junto com as mensagens
-    await interaction.reply({
-      content: `✅ Apagando ${quantidade} mensagens...`,
-      ephemeral: true
-    });
+      // Responde ANTES de apagar (senão a interação some junto com as mensagens)
+      await interaction.reply({
+        content: `✅ Apagando ${quantidade} mensagens...`,
+        flags: MessageFlags.Ephemeral
+      });
 
-    try {
       await interaction.channel.bulkDelete(quantidade, true);
-    } catch (err) {
-      console.error("❌ Erro ao limpar:", err);
+
+      return;
     }
 
-    return;
-  }
+
+    // ✅ autodelete
+    if (interaction.commandName === 'autodelete') {
+      const canal = interaction.options.getChannel('canal');
+      const tempoStr = interaction.options.getString('tempo');
+      const tempoMs = parseTempo(tempoStr);
+
+      if (!tempoMs || tempoMs < 5000) {
+        return interaction.reply({
+          content: "⚠️ Tempo inválido. Use formato como: `10s`, `5m`, `1h`",
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      autoDeleteConfig[canal.id] = tempoMs;
+      saveConfig(autoDeleteConfig);
+
+      // Responde ANTES de iniciar processo assíncrono
+      await interaction.reply({
+        content: `✅ Auto delete ativado em #${canal.name} a cada ${formatTempo(tempoMs)}`,
+        flags: MessageFlags.Ephemeral
+      });
+
+      await startAutoDelete(client, canal.id, tempoMs);
+
+      return;
+    }
 
 
-  // ✅ autodelete
-  if (interaction.commandName === 'autodelete') {
-    const canal = interaction.options.getChannel('canal');
-    const tempoStr = interaction.options.getString('tempo');
-    const tempoMs = parseTempo(tempoStr);
+    // ✅ stopautodelete
+    if (interaction.commandName === 'stopautodelete') {
+      for (const id in intervals) {
+        clearInterval(intervals[id]);
+      }
 
-    if (!tempoMs || tempoMs < 5000) {
+      intervals = {};
+      autoDeleteConfig = {};
+      saveConfig(autoDeleteConfig);
+
       return interaction.reply({
-        content: "⚠️ Tempo inválido. Use formato como: `10s`, `5m`, `1h`",
-        ephemeral: true
+        content: "🛑 Auto delete parado em todos os canais",
+        flags: MessageFlags.Ephemeral
       });
     }
 
-    autoDeleteConfig[canal.id] = tempoMs;
-    saveConfig(autoDeleteConfig);
 
-    // Responde ANTES de iniciar processo assíncrono
-    await interaction.reply({
-      content: `✅ Auto delete ativado em #${canal.name} a cada ${formatTempo(tempoMs)}`,
-      ephemeral: true
-    });
+    // ✅ status
+    if (interaction.commandName === 'status') {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-    await startAutoDelete(client, canal.id, tempoMs);
+      const canais = Object.keys(autoDeleteConfig);
 
-    return;
-  }
-
-
-  // ✅ stopautodelete
-  if (interaction.commandName === 'stopautodelete') {
-    for (const id in intervals) {
-      clearInterval(intervals[id]);
-    }
-
-    intervals = {};
-    autoDeleteConfig = {};
-    saveConfig(autoDeleteConfig);
-
-    return interaction.reply({
-      content: "🛑 Auto delete parado em todos os canais",
-      ephemeral: true
-    });
-  }
-
-
-  // ✅ status
-  if (interaction.commandName === 'status') {
-    await interaction.deferReply({ ephemeral: true });
-
-    const canais = Object.keys(autoDeleteConfig);
-
-    if (!canais.length) {
-      return interaction.editReply("⚠️ Nenhum canal com auto delete ativo");
-    }
-
-    let msg = `📊 **Status Auto Delete**\n\n`;
-
-    for (const canalId of canais) {
-      try {
-        const canal = await client.channels.fetch(canalId);
-        const tempo = autoDeleteConfig[canalId];
-
-        msg += `• #${canal.name}\n`;
-        msg += `  ⏱ ${formatTempo(tempo)}\n`;
-        msg += `  🔁 ${intervals[canalId] ? "ativo ✅" : "parado ❌"}\n\n`;
-
-      } catch {
-        msg += `• canal desconhecido (${canalId})\n\n`;
+      if (!canais.length) {
+        return interaction.editReply("⚠️ Nenhum canal com auto delete ativo");
       }
+
+      let msg = `📊 **Status Auto Delete**\n\n`;
+
+      for (const canalId of canais) {
+        try {
+          const canal = await client.channels.fetch(canalId);
+          const tempo = autoDeleteConfig[canalId];
+
+          msg += `• #${canal.name}\n`;
+          msg += `  ⏱ ${formatTempo(tempo)}\n`;
+          msg += `  🔁 ${intervals[canalId] ? "ativo ✅" : "parado ❌"}\n\n`;
+
+        } catch {
+          msg += `• canal desconhecido (${canalId})\n\n`;
+        }
+      }
+
+      return interaction.editReply(msg);
     }
 
-    return interaction.editReply(msg);
+  } catch (err) {
+    console.error(`❌ Erro no comando ${interaction.commandName}:`, err.message);
+
+    // Tenta avisar o usuário se ainda for possível
+    try {
+      const msg = { content: "❌ Erro ao executar o comando.", flags: MessageFlags.Ephemeral };
+
+      if (interaction.deferred) {
+        await interaction.editReply(msg);
+      } else if (!interaction.replied) {
+        await interaction.reply(msg);
+      }
+    } catch {
+      // Interação já expirou, ignora
+    }
   }
 });
 

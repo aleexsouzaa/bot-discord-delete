@@ -8,8 +8,8 @@ const {
   Routes
 } = require('discord.js');
 
-const TOKEN = 'SEU_TOKEN_AQUI';
-const CLIENT_ID = 'SEU_CLIENT_ID_AQUI';
+const TOKEN = 'TOKEN_AQUI';
+const CLIENT_ID = 'CLIENT_ID_AQUI';
 
 const client = new Client({
   intents: [
@@ -41,7 +41,7 @@ function parseTempo(str) {
   return total;
 }
 
-client.once('ready', () => {
+client.once('clientReady', () => {
   console.log(`✅ Bot online: ${client.user.tag}`);
 });
 

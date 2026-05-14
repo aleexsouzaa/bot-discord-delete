@@ -47,9 +47,7 @@ const client = new Client({
   ]
 });
 
-// =====================
-// EVITA CRASH POR ERRO NÃO TRATADO
-// =====================
+// Evita crash por erro não tratado
 client.on('error', (err) => {
   console.error('❌ Erro no client Discord:', err.message);
 });
@@ -104,7 +102,6 @@ function formatTempo(ms) {
 async function startAutoDelete(client, canalId, tempoMs) {
   try {
     const canal = await client.channels.fetch(canalId);
-
     if (!canal) return;
 
     if (intervals[canalId]) clearInterval(intervals[canalId]);
@@ -142,7 +139,6 @@ client.once('clientReady', async () => {
   console.log(`✅ Bot online: ${client.user.tag}`);
 
   const config = loadConfig();
-
   for (const canalId in config) {
     await startAutoDelete(client, canalId, config[canalId]);
   }
@@ -155,21 +151,25 @@ client.once('clientReady', async () => {
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
+  // deferReply IMEDIATAMENTE — antes de qualquer lógica
+  // Isso garante que o Discord não descarte a interação por timeout (3s)
+  try {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  } catch (err) {
+    // Se já expirou antes mesmo do deferReply, não tem o que fazer
+    console.error(`❌ deferReply falhou (${interaction.commandName}):`, err.message);
+    return;
+  }
+
   try {
 
     // ✅ limpar
     if (interaction.commandName === 'limpar') {
       const quantidade = interaction.options.getInteger('quantidade');
 
-      // Responde ANTES de apagar (senão a interação some junto com as mensagens)
-      await interaction.reply({
-        content: `✅ Apagando ${quantidade} mensagens...`,
-        flags: MessageFlags.Ephemeral
-      });
-
       await interaction.channel.bulkDelete(quantidade, true);
 
-      return;
+      return interaction.editReply(`✅ ${quantidade} mensagens apagadas.`);
     }
 
 
@@ -180,24 +180,17 @@ client.on('interactionCreate', async (interaction) => {
       const tempoMs = parseTempo(tempoStr);
 
       if (!tempoMs || tempoMs < 5000) {
-        return interaction.reply({
-          content: "⚠️ Tempo inválido. Use formato como: `10s`, `5m`, `1h`",
-          flags: MessageFlags.Ephemeral
-        });
+        return interaction.editReply("⚠️ Tempo inválido. Use formato como: `10s`, `5m`, `1h`");
       }
 
       autoDeleteConfig[canal.id] = tempoMs;
       saveConfig(autoDeleteConfig);
 
-      // Responde ANTES de iniciar processo assíncrono
-      await interaction.reply({
-        content: `✅ Auto delete ativado em #${canal.name} a cada ${formatTempo(tempoMs)}`,
-        flags: MessageFlags.Ephemeral
-      });
-
       await startAutoDelete(client, canal.id, tempoMs);
 
-      return;
+      return interaction.editReply(
+        `✅ Auto delete ativado em #${canal.name} a cada ${formatTempo(tempoMs)}`
+      );
     }
 
 
@@ -211,17 +204,12 @@ client.on('interactionCreate', async (interaction) => {
       autoDeleteConfig = {};
       saveConfig(autoDeleteConfig);
 
-      return interaction.reply({
-        content: "🛑 Auto delete parado em todos os canais",
-        flags: MessageFlags.Ephemeral
-      });
+      return interaction.editReply("🛑 Auto delete parado em todos os canais");
     }
 
 
     // ✅ status
     if (interaction.commandName === 'status') {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
       const canais = Object.keys(autoDeleteConfig);
 
       if (!canais.length) {
@@ -250,17 +238,10 @@ client.on('interactionCreate', async (interaction) => {
   } catch (err) {
     console.error(`❌ Erro no comando ${interaction.commandName}:`, err.message);
 
-    // Tenta avisar o usuário se ainda for possível
     try {
-      const msg = { content: "❌ Erro ao executar o comando.", flags: MessageFlags.Ephemeral };
-
-      if (interaction.deferred) {
-        await interaction.editReply(msg);
-      } else if (!interaction.replied) {
-        await interaction.reply(msg);
-      }
+      await interaction.editReply("❌ Erro ao executar o comando.");
     } catch {
-      // Interação já expirou, ignora
+      // Ignora se não conseguir nem editar
     }
   }
 });

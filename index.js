@@ -1,3 +1,18 @@
+const fs = require('fs');
+
+const CONFIG_FILE = './autodelete.json';
+
+// carregar config
+function loadConfig() {
+  if (!fs.existsSync(CONFIG_FILE)) return {};
+  return JSON.parse(fs.readFileSync(CONFIG_FILE));
+}
+
+// salvar config
+function saveConfig(config) {
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+}
+
 // =====================
 // EXPRESS (Render fix)
 // =====================
@@ -36,8 +51,8 @@ const client = new Client({
   ]
 });
 
-let autoDeleteConfig = {};
-
+let autoDeleteConfig = loadConfig();
+let intervals = {};
 
 // =====================
 // ⏱️ CONVERSOR DE TEMPO
@@ -63,7 +78,13 @@ function parseTempo(str) {
 // =====================
 // READY
 // =====================
-client.once('clientReady', () => {
+client.once('clientReady', async () => {
+  const config = loadConfig();
+
+  for (const canalId in config) {
+    console.log(`🔄 Restaurando auto delete para canal ${canalId}`);
+    await startAutoDelete(client, canalId, config[canalId]);
+  }
   console.log(`✅ Bot online: ${client.user.tag}`);
 });
 
@@ -161,45 +182,38 @@ client.on('interactionCreate', async (interaction) => {
   }
 
   // ✅ /autodelete (NOVO)
-  if (interaction.commandName === 'autodelete') {
+if (interaction.commandName === 'autodelete') {
 
-    const canal = interaction.options.getChannel('canal');
-    const tempoStr = interaction.options.getString('tempo');
+  const canal = interaction.options.getChannel('canal');
+  const tempoStr = interaction.options.getString('tempo');
 
-    const tempoMs = parseTempo(tempoStr);
+  const tempoMs = parseTempo(tempoStr);
 
-    if (!tempoMs || tempoMs < 5000) {
-      return interaction.reply("⚠️ Tempo inválido (ex: 10s, 1m, 1h)");
-    }
-
-    if (autoDeleteConfig[canal.id]) {
-      clearInterval(autoDeleteConfig[canal.id]);
-    }
-
-    autoDeleteConfig[canal.id] = setInterval(async () => {
-      try {
-        await canal.bulkDelete(100, true);
-        console.log(`🧹 Limpando ${canal.name}`);
-      } catch (err) {
-        console.error(err);
-      }
-    }, tempoMs);
-
-    return interaction.reply(`✅ Auto delete ativado em ${canal.name} a cada ${tempoStr}`);
+  if (!tempoMs || tempoMs < 5000) {
+    return interaction.reply("⚠️ Tempo inválido");
   }
+
+  autoDeleteConfig[canal.id] = tempoMs;
+  saveConfig(autoDeleteConfig);
+
+  await startAutoDelete(client, canal.id, tempoMs);
+
+  return interaction.reply(`✅ Auto delete ativado em ${canal.name} (${tempoStr})`);
+}
 
   // ✅ /stopautodelete
-  if (interaction.commandName === 'stopautodelete') {
+ if (interaction.commandName === 'stopautodelete') {
 
-    Object.keys(autoDeleteConfig).forEach(id => {
-      clearInterval(autoDeleteConfig[id]);
-    });
-
-    autoDeleteConfig = {};
-
-    return interaction.reply("🛑 Auto delete parado");
+  for (const canalId in intervals) {
+    clearInterval(intervals[canalId]);
   }
-});
+
+  intervals = {};
+  autoDeleteConfig = {};
+  saveConfig(autoDeleteConfig);
+
+  return interaction.reply('🛑 Auto delete parado e apagado da config');
+}
 
 
 // =====================
@@ -251,5 +265,24 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
   }
 })();
 
+
+async function startAutoDelete(client, canalId, tempoMs) {
+  const canal = await client.channels.fetch(canalId);
+
+  if (!canal) return;
+
+  if (intervals[canalId]) {
+    clearInterval(intervals[canalId]);
+  }
+
+  intervals[canalId] = setInterval(async () => {
+    try {
+      await canal.bulkDelete(100, true);
+      console.log(`🧹 Limpando ${canal.name}`);
+    } catch (err) {
+      console.error(err);
+    }
+  }, tempoMs);
+}
 
 client.login(TOKEN);

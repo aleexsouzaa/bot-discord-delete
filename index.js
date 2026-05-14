@@ -237,31 +237,37 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
     Routes.applicationCommands(CLIENT_ID),
     {
       body: [
+
         new SlashCommandBuilder()
           .setName('limpar')
           .setDescription('Apagar mensagens')
           .addIntegerOption(opt =>
-            opt.setName('quantidade').setRequired(true)
+            opt.setName('quantidade')
+              .setDescription('Quantidade de mensagens (1-100)')
+              .setRequired(true)
           ),
 
         new SlashCommandBuilder()
           .setName('autodelete')
-          .setDescription('Auto delete')
+          .setDescription('Ativar auto delete automático')
           .addChannelOption(opt =>
-            opt.setName('canal').setRequired(true)
+            opt.setName('canal')
+              .setDescription('Canal onde será aplicado')
+              .setRequired(true)
           )
           .addStringOption(opt =>
-            opt.setName('tempo').setRequired(true)
+            opt.setName('tempo')
+              .setDescription('Ex: 10s, 5m, 1h, 1h30m')
+              .setRequired(true)
           ),
 
         new SlashCommandBuilder()
           .setName('stopautodelete')
           .setDescription('Parar auto delete'),
 
-        
         new SlashCommandBuilder()
           .setName('status')
-          .setDescription('Ver canais com auto delete ativo')
+          .setDescription('Listar canais com auto delete ativo')
 
       ]
     }

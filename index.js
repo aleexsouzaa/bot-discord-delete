@@ -184,8 +184,11 @@ client.on('interactionCreate', async (interaction) => {
     saveConfig(autoDeleteConfig);
 
     await startAutoDelete(client, canal.id, tempoMs);
+    
+    return interaction.reply(
+      `✅ Auto delete ativado em #${canal.name} a cada ${formatTempo(tempoMs)}`
+    );
 
-    return interaction.reply(`✅ Auto delete ativado em ${canal.name}`);
   }
 
   // stop
@@ -215,7 +218,7 @@ client.on('interactionCreate', async (interaction) => {
         const canal = await client.channels.fetch(canalId);
         const tempo = autoDeleteConfig[canalId];
 
-        msg += `• ${canal.name} → a cada ${formatTempo(tempo)}\n`;
+        msg += `• #${canal.name} → a cada ${formatTempo(tempo)}\n`;
 
       } catch (err) {
         msg += `• Canal desconhecido (${canalId})\n`;

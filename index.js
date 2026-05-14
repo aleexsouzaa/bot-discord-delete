@@ -8,8 +8,8 @@ const {
   Routes
 } = require('discord.js');
 
-const TOKEN = 'TOKEN_AQUI';
-const CLIENT_ID = 'CLIENT_ID_AQUI';
+const TOKEN = process.env.TOKEN;
+const CLIENT_ID = process.env.CLIENT_ID;
 
 const client = new Client({
   intents: [

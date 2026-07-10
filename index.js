@@ -18,7 +18,15 @@ const CONFIG_FILE = './autodelete.json';
 
 function loadConfig() {
   if (!fs.existsSync(CONFIG_FILE)) return {};
-  return JSON.parse(fs.readFileSync(CONFIG_FILE));
+  try {
+    return JSON.parse(fs.readFileSync(CONFIG_FILE));
+  } catch (err) {
+    // Se o arquivo existir mas estiver corrompido (ex: processo derrubado
+    // no meio de um writeFileSync), não deixa o bot inteiro morrer no
+    // boot - só loga e começa com config vazia.
+    console.error('❌ Erro ao ler autodelete.json, iniciando com config vazia:', err.message);
+    return {};
+  }
 }
 
 function saveConfig(config) {
@@ -44,6 +52,7 @@ const {
   GatewayIntentBits,
   SlashCommandBuilder,
   MessageFlags,
+  PermissionsBitField,
   REST,
   Routes
 } = require('discord.js');
@@ -51,11 +60,20 @@ const {
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 
+if (!TOKEN || !CLIENT_ID) {
+  console.error('❌ TOKEN e/ou CLIENT_ID não configurados nas variáveis de ambiente. Encerrando.');
+  process.exit(1);
+}
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
+    GatewayIntentBits.GuildMessages
+    // MessageContent removido: não é necessário para apagar mensagens
+    // (bulkDelete/delete não dependem do conteúdo) - é um intent
+    // privilegiado que exige aprovação manual da Discord quando o bot
+    // passa de 100 servidores, então evitar pedir o que não se usa
+    // reduz atrito de verificação no futuro.
   ]
 });
 
@@ -66,6 +84,13 @@ client.on('error', (err) => {
 
 let autoDeleteConfig = loadConfig();
 let intervals = {};
+
+// Contador de falhas consecutivas por canal - usado para desligar
+// automaticamente um auto-delete que está falhando sempre (canal
+// apagado, permissão revogada, etc.), em vez de ficar rodando pra
+// sempre gerando erro no console sem que ninguém perceba.
+let falhasConsecutivas = {};
+const LIMITE_FALHAS_CONSECUTIVAS = 5;
 
 
 // =====================
@@ -103,14 +128,48 @@ function formatTempo(ms) {
 
 
 // =====================
+// PERMISSÕES
+// =====================
+function temPermissaoParaApagar(canal) {
+  const me = canal.guild.members.me;
+  if (!me) return false;
+  const perms = canal.permissionsFor(me);
+  return !!perms && perms.has(PermissionsBitField.Flags.ManageMessages);
+}
+
+
+// =====================
 // AUTO DELETE
 // =====================
+function pararAutoDelete(canalId) {
+  if (intervals[canalId]) {
+    clearInterval(intervals[canalId]);
+    delete intervals[canalId];
+  }
+  delete autoDeleteConfig[canalId];
+  delete falhasConsecutivas[canalId];
+  saveConfig(autoDeleteConfig);
+}
+
 async function startAutoDelete(client, canalId, tempoMs) {
   try {
     const canal = await client.channels.fetch(canalId);
-    if (!canal || !canal.isTextBased()) return;
+    if (!canal || !canal.isTextBased()) {
+      console.error(`❌ Canal ${canalId} inválido ou não é de texto - removendo da config.`);
+      pararAutoDelete(canalId);
+      return;
+    }
+
+    if (!temPermissaoParaApagar(canal)) {
+      // Sem permissão ManageMessages, o loop rodaria pra sempre sem
+      // apagar nada (o filtro .deletable já barra), silenciosamente.
+      // Melhor avisar de cara e não nem ligar o intervalo.
+      console.error(`❌ Sem permissão "Gerenciar Mensagens" em #${canal.name} - auto delete não iniciado.`);
+      return;
+    }
 
     if (intervals[canalId]) clearInterval(intervals[canalId]);
+    falhasConsecutivas[canalId] = 0;
 
     console.log(`✅ Auto delete ativo em ${canal.name}`);
 
@@ -121,17 +180,32 @@ async function startAutoDelete(client, canalId, tempoMs) {
         const messages = await canal.messages.fetch({ limit: 100 });
 
         const deletable = messages.filter(
-          m => m.deletable && !m.pinned
+          m => m.bulkDeletable && !m.pinned
         );
 
-        if (!deletable.size) return;
+        if (!deletable.size) {
+          falhasConsecutivas[canalId] = 0;
+          return;
+        }
 
         await canal.bulkDelete(deletable, true);
 
         console.log(`🧹 ${deletable.size} mensagens apagadas em ${canal.name}`);
+        falhasConsecutivas[canalId] = 0;
 
       } catch (err) {
-        console.error("❌ erro loop:", err.message);
+        console.error(`❌ erro loop (${canal.name}):`, err.message);
+
+        // Canal apagado (10003) ou permissão revogada (50013) - não
+        // adianta continuar tentando pra sempre. Desliga esse canal
+        // especificamente após algumas falhas seguidas.
+        const codigosFatais = [10003, 50013, 50001];
+        falhasConsecutivas[canalId] = (falhasConsecutivas[canalId] || 0) + 1;
+
+        if (codigosFatais.includes(err.code) || falhasConsecutivas[canalId] >= LIMITE_FALHAS_CONSECUTIVAS) {
+          console.error(`🛑 Desligando auto delete em ${canal.name} após falhas consecutivas.`);
+          pararAutoDelete(canalId);
+        }
       }
     }, tempoMs);
 
@@ -155,6 +229,24 @@ client.once('clientReady', async () => {
 
 
 // =====================
+// HELPER DE RESPOSTA SEGURA A ERRO
+// =====================
+async function responderErro(interaction, mensagem = "❌ erro interno") {
+  try {
+    if (interaction.replied || interaction.deferred) {
+      await interaction.followUp({ content: mensagem, flags: MessageFlags.Ephemeral });
+    } else {
+      await interaction.reply({ content: mensagem, flags: MessageFlags.Ephemeral });
+    }
+  } catch (err) {
+    // Se nem o followUp conseguir ser enviado (ex: interação expirou
+    // após 15min), só loga - não há mais nada a fazer.
+    console.error("❌ Não foi possível responder erro ao usuário:", err.message);
+  }
+}
+
+
+// =====================
 // COMMANDS
 // =====================
 client.on('interactionCreate', async (interaction) => {
@@ -166,13 +258,29 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.commandName === 'limpar') {
       const quantidade = interaction.options.getInteger('quantidade');
 
+      if (!temPermissaoParaApagar(interaction.channel)) {
+        return interaction.reply({
+          content: "⚠️ Não tenho permissão \"Gerenciar Mensagens\" neste canal.",
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
       // responde IMEDIATO
       await interaction.reply({
         content: `✅ Apagando ${quantidade} mensagens...`,
         flags: MessageFlags.Ephemeral
       });
 
-      await interaction.channel.bulkDelete(quantidade, true);
+      try {
+        const deletadas = await interaction.channel.bulkDelete(quantidade, true);
+        await interaction.followUp({
+          content: `🧹 ${deletadas.size} mensagens apagadas (mensagens com mais de 14 dias não podem ser apagadas em massa pela API do Discord e são ignoradas).`,
+          flags: MessageFlags.Ephemeral
+        });
+      } catch (err) {
+        console.error("❌ erro bulkDelete /limpar:", err.message);
+        await responderErro(interaction, "❌ Não foi possível apagar as mensagens. Verifique se todas têm menos de 14 dias.");
+      }
       return;
     }
 
@@ -185,7 +293,21 @@ client.on('interactionCreate', async (interaction) => {
 
       if (!tempoMs || tempoMs < 5000) {
         return interaction.reply({
-          content: "⚠️ Tempo inválido",
+          content: "⚠️ Tempo inválido (mínimo 5s). Use o formato: 10s, 5m, 1h",
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      if (!canal.isTextBased()) {
+        return interaction.reply({
+          content: "⚠️ Selecione um canal de texto.",
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      if (!temPermissaoParaApagar(canal)) {
+        return interaction.reply({
+          content: `⚠️ Não tenho permissão "Gerenciar Mensagens" em #${canal.name}.`,
           flags: MessageFlags.Ephemeral
         });
       }
@@ -202,19 +324,31 @@ client.on('interactionCreate', async (interaction) => {
     }
 
 
-    // ✅ stop
+    // ✅ stop (agora por canal, ou todos se nenhum for informado)
     if (interaction.commandName === 'stopautodelete') {
+      const canal = interaction.options.getChannel('canal');
 
-      for (const id in intervals) {
-        clearInterval(intervals[id]);
+      if (canal) {
+        if (!autoDeleteConfig[canal.id]) {
+          return interaction.reply({
+            content: `⚠️ Não há auto delete ativo em #${canal.name}.`,
+            flags: MessageFlags.Ephemeral
+          });
+        }
+        pararAutoDelete(canal.id);
+        return interaction.reply({
+          content: `🛑 Auto delete parado em #${canal.name}`,
+          flags: MessageFlags.Ephemeral
+        });
       }
 
-      intervals = {};
-      autoDeleteConfig = {};
-      saveConfig(autoDeleteConfig);
+      const canaisAtivos = Object.keys(autoDeleteConfig);
+      for (const id of canaisAtivos) pararAutoDelete(id);
 
       return interaction.reply({
-        content: "🛑 Auto delete parado",
+        content: canaisAtivos.length
+          ? `🛑 Auto delete parado em ${canaisAtivos.length} canal(is).`
+          : "⚠️ Nenhum canal com auto delete ativo.",
         flags: MessageFlags.Ephemeral
       });
     }
@@ -240,11 +374,13 @@ client.on('interactionCreate', async (interaction) => {
         try {
           const canal = await client.channels.fetch(canalId);
           const tempo = autoDeleteConfig[canalId];
+          const falhas = falhasConsecutivas[canalId] || 0;
+          const alerta = falhas > 0 ? ` ⚠️ (${falhas} falha(s) recente(s))` : '';
 
-          msg += `• #${canal.name} → ${formatTempo(tempo)}\n`;
+          msg += `• #${canal.name} → ${formatTempo(tempo)}${alerta}\n`;
 
         } catch {
-          msg += `• canal inválido\n`;
+          msg += `• canal inválido (${canalId})\n`;
         }
       }
 
@@ -253,13 +389,7 @@ client.on('interactionCreate', async (interaction) => {
 
   } catch (err) {
     console.error("❌ erro comando:", err);
-
-    if (!interaction.replied) {
-      await interaction.reply({
-        content: "❌ erro interno",
-        flags: MessageFlags.Ephemeral
-      });
-    }
+    await responderErro(interaction);
   }
 });
 
@@ -270,45 +400,56 @@ client.on('interactionCreate', async (interaction) => {
 const rest = new REST({ version: '10' }).setToken(TOKEN);
 
 (async () => {
-  await rest.put(
-    Routes.applicationCommands(CLIENT_ID),
-    {
-      body: [
-        new SlashCommandBuilder()
-          .setName('limpar')
-          .setDescription('Apagar mensagens')
-          .addIntegerOption(o =>
-            o.setName('quantidade')
-              .setDescription('1 a 100')
-              .setRequired(true)
-          ),
+  try {
+    await rest.put(
+      Routes.applicationCommands(CLIENT_ID),
+      {
+        body: [
+          new SlashCommandBuilder()
+            .setName('limpar')
+            .setDescription('Apagar mensagens')
+            .addIntegerOption(o =>
+              o.setName('quantidade')
+                .setDescription('2 a 100')
+                .setMinValue(2)
+                .setMaxValue(100)
+                .setRequired(true)
+            ),
 
-        new SlashCommandBuilder()
-          .setName('autodelete')
-          .setDescription('Ativar auto delete')
-          .addChannelOption(o =>
-            o.setName('canal')
-              .setDescription('Canal')
-              .setRequired(true)
-          )
-          .addStringOption(o =>
-            o.setName('tempo')
-              .setDescription('10s, 5m, 1h')
-              .setRequired(true)
-          ),
+          new SlashCommandBuilder()
+            .setName('autodelete')
+            .setDescription('Ativar auto delete')
+            .addChannelOption(o =>
+              o.setName('canal')
+                .setDescription('Canal')
+                .setRequired(true)
+            )
+            .addStringOption(o =>
+              o.setName('tempo')
+                .setDescription('10s, 5m, 1h')
+                .setRequired(true)
+            ),
 
-        new SlashCommandBuilder()
-          .setName('stopautodelete')
-          .setDescription('Parar auto delete'),
+          new SlashCommandBuilder()
+            .setName('stopautodelete')
+            .setDescription('Parar auto delete')
+            .addChannelOption(o =>
+              o.setName('canal')
+                .setDescription('Canal específico (deixe vazio para parar todos)')
+                .setRequired(false)
+            ),
 
-        new SlashCommandBuilder()
-          .setName('status')
-          .setDescription('Ver status')
-      ]
-    }
-  );
+          new SlashCommandBuilder()
+            .setName('status')
+            .setDescription('Ver status')
+        ]
+      }
+    );
 
-  console.log("✅ Slash registrados");
+    console.log("✅ Slash registrados");
+  } catch (err) {
+    console.error("❌ Erro ao registrar slash commands:", err);
+  }
 })();
 
 client.login(TOKEN);

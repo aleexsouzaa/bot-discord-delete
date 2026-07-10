@@ -93,7 +93,7 @@ let falhasConsecutivas = {};
 const LIMITE_FALHAS_CONSECUTIVAS = 5;
 
 // Tempo até a confirmação efêmera do /limpar se apagar sozinha.
-const TEMPO_AUTO_DISMISS_MS = 30000;
+const TEMPO_AUTO_DISMISS_MS = 5000;
 
 
 // =====================
@@ -248,6 +248,17 @@ async function responderErro(interaction, mensagem = "❌ erro interno") {
   }
 }
 
+// Responde a interação e agenda o apagamento automático dessa resposta
+// efêmera depois de TEMPO_AUTO_DISMISS_MS - evita que confirmações
+// rotineiras (autodelete configurado, stop, etc.) fiquem acumuladas no
+// canal até o usuário clicar em "Ignorar mensagem" manualmente.
+async function replyComAutoDismiss(interaction, options) {
+  await interaction.reply(options);
+  setTimeout(() => {
+    interaction.deleteReply().catch(() => {});
+  }, TEMPO_AUTO_DISMISS_MS);
+}
+
 
 // =====================
 // COMMANDS
@@ -262,7 +273,7 @@ client.on('interactionCreate', async (interaction) => {
       const quantidade = interaction.options.getInteger('quantidade');
 
       if (!temPermissaoParaApagar(interaction.channel)) {
-        return interaction.reply({
+        return replyComAutoDismiss(interaction, {
           content: "⚠️ Não tenho permissão \"Gerenciar Mensagens\" neste canal.",
           flags: MessageFlags.Ephemeral
         });
@@ -304,21 +315,21 @@ client.on('interactionCreate', async (interaction) => {
       const tempoMs = parseTempo(tempoStr);
 
       if (!tempoMs || tempoMs < 5000) {
-        return interaction.reply({
+        return replyComAutoDismiss(interaction, {
           content: "⚠️ Tempo inválido (mínimo 5s). Use o formato: 10s, 5m, 1h",
           flags: MessageFlags.Ephemeral
         });
       }
 
       if (!canal.isTextBased()) {
-        return interaction.reply({
+        return replyComAutoDismiss(interaction, {
           content: "⚠️ Selecione um canal de texto.",
           flags: MessageFlags.Ephemeral
         });
       }
 
       if (!temPermissaoParaApagar(canal)) {
-        return interaction.reply({
+        return replyComAutoDismiss(interaction, {
           content: `⚠️ Não tenho permissão "Gerenciar Mensagens" em #${canal.name}.`,
           flags: MessageFlags.Ephemeral
         });
@@ -329,7 +340,7 @@ client.on('interactionCreate', async (interaction) => {
 
       await startAutoDelete(client, canal.id, tempoMs);
 
-      return interaction.reply({
+      return replyComAutoDismiss(interaction, {
         content: `✅ Auto delete em #${canal.name} (${formatTempo(tempoMs)})`,
         flags: MessageFlags.Ephemeral
       });
@@ -342,13 +353,13 @@ client.on('interactionCreate', async (interaction) => {
 
       if (canal) {
         if (!autoDeleteConfig[canal.id]) {
-          return interaction.reply({
+          return replyComAutoDismiss(interaction, {
             content: `⚠️ Não há auto delete ativo em #${canal.name}.`,
             flags: MessageFlags.Ephemeral
           });
         }
         pararAutoDelete(canal.id);
-        return interaction.reply({
+        return replyComAutoDismiss(interaction, {
           content: `🛑 Auto delete parado em #${canal.name}`,
           flags: MessageFlags.Ephemeral
         });
@@ -357,7 +368,7 @@ client.on('interactionCreate', async (interaction) => {
       const canaisAtivos = Object.keys(autoDeleteConfig);
       for (const id of canaisAtivos) pararAutoDelete(id);
 
-      return interaction.reply({
+      return replyComAutoDismiss(interaction, {
         content: canaisAtivos.length
           ? `🛑 Auto delete parado em ${canaisAtivos.length} canal(is).`
           : "⚠️ Nenhum canal com auto delete ativo.",
@@ -377,26 +388,35 @@ client.on('interactionCreate', async (interaction) => {
       const canais = Object.keys(autoDeleteConfig);
 
       if (!canais.length) {
-        return interaction.editReply("⚠️ Nenhum canal ativo");
-      }
+        await interaction.editReply("⚠️ Nenhum canal ativo");
+      } else {
+        let msg = "📊 Status Auto Delete\n\n";
 
-      let msg = "📊 Status Auto Delete\n\n";
+        for (const canalId of canais) {
+          try {
+            const canal = await client.channels.fetch(canalId);
+            const tempo = autoDeleteConfig[canalId];
+            const falhas = falhasConsecutivas[canalId] || 0;
+            const alerta = falhas > 0 ? ` ⚠️ (${falhas} falha(s) recente(s))` : '';
 
-      for (const canalId of canais) {
-        try {
-          const canal = await client.channels.fetch(canalId);
-          const tempo = autoDeleteConfig[canalId];
-          const falhas = falhasConsecutivas[canalId] || 0;
-          const alerta = falhas > 0 ? ` ⚠️ (${falhas} falha(s) recente(s))` : '';
+            msg += `• #${canal.name} → ${formatTempo(tempo)}${alerta}\n`;
 
-          msg += `• #${canal.name} → ${formatTempo(tempo)}${alerta}\n`;
-
-        } catch {
-          msg += `• canal inválido (${canalId})\n`;
+          } catch {
+            msg += `• canal inválido (${canalId})\n`;
+          }
         }
+
+        await interaction.editReply(msg);
       }
 
-      return interaction.editReply(msg);
+      // Mesmo comportamento de auto-dismiss do /limpar - some sozinho
+      // depois de alguns segundos, sem precisar clicar em "Ignorar
+      // mensagem".
+      setTimeout(() => {
+        interaction.deleteReply().catch(() => {});
+      }, TEMPO_AUTO_DISMISS_MS);
+
+      return;
     }
 
   } catch (err) {

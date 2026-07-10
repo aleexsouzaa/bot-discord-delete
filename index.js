@@ -93,7 +93,7 @@ let falhasConsecutivas = {};
 const LIMITE_FALHAS_CONSECUTIVAS = 5;
 
 // Tempo até a confirmação efêmera do /limpar se apagar sozinha.
-const TEMPO_AUTO_DISMISS_MS = 5000;
+const TEMPO_AUTO_DISMISS_MS = 120000;
 
 
 // =====================

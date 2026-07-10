@@ -92,6 +92,9 @@ let intervals = {};
 let falhasConsecutivas = {};
 const LIMITE_FALHAS_CONSECUTIVAS = 5;
 
+// Tempo até a confirmação efêmera do /limpar se apagar sozinha.
+const TEMPO_AUTO_DISMISS_MS = 30000;
+
 
 // =====================
 // TEMPO
@@ -273,14 +276,23 @@ client.on('interactionCreate', async (interaction) => {
 
       try {
         const deletadas = await interaction.channel.bulkDelete(quantidade, true);
-        await interaction.followUp({
-          content: `🧹 ${deletadas.size} mensagens apagadas (mensagens com mais de 14 dias não podem ser apagadas em massa pela API do Discord e são ignoradas).`,
-          flags: MessageFlags.Ephemeral
+        await interaction.editReply({
+          content: `🧹 ${deletadas.size} mensagens apagadas (mensagens com mais de 14 dias não podem ser apagadas em massa pela API do Discord e são ignoradas).`
         });
       } catch (err) {
         console.error("❌ erro bulkDelete /limpar:", err.message);
         await responderErro(interaction, "❌ Não foi possível apagar as mensagens. Verifique se todas têm menos de 14 dias.");
       }
+
+      // Apaga a própria confirmação efêmera depois de alguns segundos,
+      // em vez de deixá-la parada no canal até o usuário clicar em
+      // "Ignorar mensagem" manualmente. deleteReply() funciona em
+      // respostas efêmeras normalmente - o catch é só para o caso raro
+      // do token da interação já ter expirado (>15min) nesse meio tempo.
+      setTimeout(() => {
+        interaction.deleteReply().catch(() => {});
+      }, TEMPO_AUTO_DISMISS_MS);
+
       return;
     }
 
